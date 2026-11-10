@@ -11,6 +11,7 @@ di browser.
 - Tambah dan hapus transaksi dengan kategori, tanggal, nominal, dan catatan.
 - Privacy mode untuk menyembunyikan nominal.
 - Penyimpanan otomatis menggunakan `localStorage`.
+- Unduh dan pulihkan cadangan transaksi dalam format JSON.
 - Tampilan responsif dengan React, Tailwind CSS, dan Lucide icons.
 
 ## Menjalankan secara lokal
@@ -31,5 +32,9 @@ npm run lint
 npm run build
 ```
 
-Transaksi disimpan di browser yang sedang digunakan dan tidak disinkronkan ke
-server atau perangkat lain.
+Transaksi disimpan otomatis di browser dan perangkat yang sedang digunakan.
+Data tidak disinkronkan ke server atau perangkat lain, sehingga tetap ada saat
+situs dibuka kembali melalui browser dan alamat yang sama, tetapi dapat hilang
+jika data situs/browser dihapus. Gunakan **Unduh cadangan** secara berkala dan
+simpan file JSON di tempat yang aman. **Pulihkan data** akan mengganti
+transaksi di browser dengan isi file cadangan.

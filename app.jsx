@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowLeft,
@@ -9,15 +9,18 @@ import {
   Check,
   ChevronDown,
   Coffee,
+  Download,
   Eye,
   EyeOff,
   Gift,
+  HardDrive,
   Heart,
   Home,
   MoreHorizontal,
   Plus,
   ShoppingBag,
   Trash2,
+  Upload,
   Wallet,
   X,
 } from "lucide-react";
@@ -78,6 +81,25 @@ const formatRupiah = (amount) =>
     maximumFractionDigits: 0,
   }).format(amount);
 
+const formatAmountInput = (value) => value.replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+const isValidTransaction = (transaction) => {
+  if (!transaction || typeof transaction !== "object") return false;
+  const dateValue = new Date(`${transaction.date}T00:00:00`);
+  return (
+    (typeof transaction.id === "string" || typeof transaction.id === "number") &&
+    (transaction.type === "income" || transaction.type === "expense") &&
+    Number.isFinite(Number(transaction.amount)) &&
+    Number(transaction.amount) > 0 &&
+    typeof transaction.category === "string" &&
+    typeof transaction.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(transaction.date) &&
+    !Number.isNaN(dateValue.getTime()) &&
+    dateValue.toISOString().startsWith(transaction.date) &&
+    (transaction.note === undefined || typeof transaction.note === "string")
+  );
+};
+
 const localDateString = (date = new Date()) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -109,17 +131,27 @@ function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [formType, setFormType] = useState("expense");
   const [amount, setAmount] = useState("");
+  const amountInputRef = useRef(null);
+  const backupInputRef = useRef(null);
+  const [storageStatus, setStorageStatus] = useState("saved");
+  const [backupMessage, setBackupMessage] = useState(null);
   const [category, setCategory] = useState("Makanan");
   const [date, setDate] = useState(() => localDateString());
   const [note, setNote] = useState("");
 
-  useEffect(() => {
+  const saveTransactions = (nextTransactions) => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextTransactions));
+      setStorageStatus("saved");
+      setTransactions(nextTransactions);
+      return true;
     } catch (error) {
       console.error("Gagal menyimpan transaksi ke localStorage.", error);
+      setStorageStatus("error");
+      setTransactions(nextTransactions);
+      return false;
     }
-  }, [transactions]);
+  };
 
   const monthTransactions = useMemo(
     () => transactions
@@ -176,10 +208,10 @@ function App() {
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    const numericAmount = Number(amount);
+    const numericAmount = Number(amount.replace(/\D/g, ""));
     if (!Number.isFinite(numericAmount) || numericAmount <= 0) return;
 
-    setTransactions((current) => [
+    saveTransactions([
       {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         type: formType,
@@ -188,13 +220,117 @@ function App() {
         note: note.trim() || category,
         date,
       },
-      ...current,
+      ...transactions,
     ]);
     setIsFormOpen(false);
   };
 
+  const handleAmountChange = (event) => {
+    const input = event.currentTarget;
+    const digitsBeforeCursor = input.value
+      .slice(0, input.selectionStart ?? input.value.length)
+      .replace(/\D/g, "").length;
+    const formattedAmount = formatAmountInput(input.value);
+
+    setAmount(formattedAmount);
+    requestAnimationFrame(() => {
+      const field = amountInputRef.current;
+      if (!field) return;
+
+      let digitsSeen = 0;
+      let cursorPosition = 0;
+      while (cursorPosition < formattedAmount.length && digitsSeen < digitsBeforeCursor) {
+        if (/\d/.test(formattedAmount[cursorPosition])) digitsSeen += 1;
+        cursorPosition += 1;
+      }
+      field.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  };
+
   const deleteTransaction = (id) => {
-    setTransactions((current) => current.filter((transaction) => transaction.id !== id));
+    saveTransactions(transactions.filter((transaction) => transaction.id !== id));
+  };
+
+  const downloadBackup = () => {
+    try {
+      const backup = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        transactions,
+      };
+      const file = new Blob([JSON.stringify(backup, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `moneytrack-backup-${localDateString()}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setBackupMessage({ type: "success", text: "Cadangan berhasil diunduh." });
+    } catch (error) {
+      console.error("Gagal membuat cadangan transaksi.", error);
+      setBackupMessage({ type: "error", text: "Cadangan gagal dibuat. Coba lagi." });
+    }
+  };
+
+  const restoreBackup = async (event) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    try {
+      const backup = JSON.parse(await file.text());
+      const restoredTransactions = Array.isArray(backup)
+        ? backup
+        : backup?.version === 1 && Array.isArray(backup.transactions)
+          ? backup.transactions
+          : null;
+
+      if (!restoredTransactions || !restoredTransactions.every(isValidTransaction)) {
+        setBackupMessage({
+          type: "error",
+          text: "File cadangan tidak valid atau formatnya tidak didukung.",
+        });
+        return;
+      }
+
+      const normalizedTransactions = restoredTransactions.map((transaction) => ({
+        ...transaction,
+        id: String(transaction.id),
+        amount: Number(transaction.amount),
+        note: transaction.note || "",
+      }));
+      const ids = new Set(normalizedTransactions.map((transaction) => transaction.id));
+      if (ids.size !== normalizedTransactions.length) {
+        setBackupMessage({ type: "error", text: "Cadangan berisi ID transaksi duplikat." });
+        return;
+      }
+
+      if (
+        transactions.length > 0 &&
+        !window.confirm("Pulihkan cadangan? Data transaksi saat ini akan diganti.")
+      ) {
+        return;
+      }
+
+      const saved = saveTransactions(normalizedTransactions);
+      setBackupMessage(saved
+        ? {
+          type: "success",
+          text: `${normalizedTransactions.length} transaksi berhasil dipulihkan.`,
+        }
+        : {
+          type: "error",
+          text: "Data dipulihkan sementara, tetapi gagal disimpan oleh browser. Unduh cadangan dan periksa ruang penyimpanan.",
+        });
+    } catch (error) {
+      console.error("Gagal membaca file cadangan.", error);
+      setBackupMessage({
+        type: "error",
+        text: "File tidak dapat dibaca. Pastikan file cadangan berupa JSON yang valid.",
+      });
+    }
   };
 
   const monthLabel = new Intl.DateTimeFormat("id-ID", {
@@ -225,6 +361,60 @@ function App() {
             {isPrivate ? <EyeOff size={19} /> : <Eye size={19} />}
           </button>
         </header>
+
+        <section className="mb-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-pink-100/80">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-pink-50 text-pink-500">
+              <HardDrive size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-slate-700">
+                {storageStatus === "error" ? "Penyimpanan bermasalah" : "Tersimpan di perangkat ini"}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                {storageStatus === "error"
+                  ? "Browser gagal menyimpan data. Segera unduh cadangan dan periksa ruang penyimpanan."
+                  : "Data tersimpan otomatis di browser ini. Unduh cadangan untuk memindahkan atau memulihkan data."}
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 flex gap-2 pl-12">
+            <button
+              type="button"
+              onClick={downloadBackup}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-pink-50 px-3 py-2 text-xs font-semibold text-pink-600 transition hover:bg-pink-100"
+            >
+              <Download size={15} />
+              Unduh cadangan
+            </button>
+            <button
+              type="button"
+              onClick={() => backupInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-200"
+            >
+              <Upload size={15} />
+              Pulihkan data
+            </button>
+            <input
+              ref={backupInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={restoreBackup}
+              className="hidden"
+              aria-label="Pilih file cadangan MoneyTrack"
+            />
+          </div>
+          {backupMessage && (
+            <p
+              role="status"
+              className={`mt-3 pl-12 text-xs ${
+                backupMessage.type === "error" ? "text-rose-600" : "text-emerald-600"
+              }`}
+            >
+              {backupMessage.text}
+            </p>
+          )}
+        </section>
 
         <section className="rounded-3xl bg-gradient-to-br from-pink-500 via-rose-500 to-rose-400 p-6 text-white shadow-xl shadow-pink-200/60 sm:p-7">
           <div className="mb-6 flex items-center justify-between">
@@ -424,13 +614,13 @@ function App() {
                 <div className="flex items-center rounded-2xl border border-slate-200 bg-white px-4 focus-within:border-pink-300 focus-within:ring-4 focus-within:ring-pink-100">
                   <span className="mr-3 font-semibold text-slate-400">Rp</span>
                   <input
-                    type="number"
-                    min="1"
-                    step="1"
+                    ref={amountInputRef}
+                    type="text"
+                    pattern="[0-9.]*"
                     required
                     inputMode="numeric"
                     value={amount}
-                    onChange={(event) => setAmount(event.target.value)}
+                    onChange={handleAmountChange}
                     placeholder="0"
                     className="w-full border-0 bg-transparent py-3.5 text-lg font-bold outline-none placeholder:text-slate-300 focus:ring-0"
                   />
